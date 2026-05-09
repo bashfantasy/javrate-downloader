@@ -111,14 +111,19 @@ export function App() {
   }
 
   async function startDownload(task: DownloadTask, option: M3u8Option) {
-    const updated = await invoke<DownloadTask>("start_task", {
-      taskId: task.id,
-      m3u8Url: option.url,
-      resolution: option.resolution,
-    });
-    setTasks((current) => current.map((item) => (item.id === task.id ? updated : item)));
-    setResolutionTask(null);
-    setResolutionOptions([]);
+    try {
+      const updated = await invoke<DownloadTask>("start_task", {
+        taskId: task.id,
+        m3u8Url: option.url,
+        resolution: option.resolution,
+      });
+      setTasks((current) => current.map((item) => (item.id === task.id ? updated : item)));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setResolutionTask(null);
+      setResolutionOptions([]);
+    }
   }
 
   async function taskAction(task: DownloadTask, command: "pause_task" | "resume_task" | "cancel_task" | "delete_task") {

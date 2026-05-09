@@ -16,6 +16,12 @@ pub fn run() {
         .manage(task_management::TaskStore::default())
         .manage(download_engine::DownloadProcessRegistry::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                let path = std::env::var("PATH").unwrap_or_else(|_| "".to_string());
+                let new_path = format!("{}:/opt/homebrew/bin:/usr/local/bin", path);
+                std::env::set_var("PATH", new_path);
+            }
             let store = app.state::<task_management::TaskStore>();
             let storage_path = dirs::data_dir()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
