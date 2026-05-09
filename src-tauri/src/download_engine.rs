@@ -328,7 +328,12 @@ fn monitor_exit(
                 .lock()
                 .expect("progress mutex poisoned")
                 .clone();
-            let completed = is_download_complete(status.success(), &progress);
+            
+            // 如果遇到 403 錯誤，我們必須無視 yt-dlp 的退出碼，強制進行接力。
+            // 這是因為如果 yt-dlp 內部因 Python 例外崩潰，或者因放棄重試而退出，
+            // 它有時會錯誤地返回 exit code 0，導致我們誤判為下載完成。
+            let requires_relay = needs_relay.load(std::sync::atomic::Ordering::SeqCst);
+            let completed = !requires_relay && is_download_complete(status.success(), &progress);
 
             if completed {
                 let _ = app.emit(
@@ -347,11 +352,12 @@ fn monitor_exit(
                     },
                 );
             }
+
             let _ = app.emit(
                 "download-process-exited",
                 ProcessExitedPayload {
                     task_id: task_id.clone(),
-                    success: status.success(),
+                    success: completed,
                     code: status.code(),
                 },
             );
@@ -359,7 +365,7 @@ fn monitor_exit(
 
             // NOTE: 進程已完全退出，.part 檔案處於穩定狀態。
             // 此時才觸發接力，新 yt-dlp 可安全續傳，零 fragment 衝突。
-            if !completed && needs_relay.load(std::sync::atomic::Ordering::SeqCst) {
+            if requires_relay {
                 let _ = app.emit(
                     "relay-needed",
                     RelayNeededPayload {

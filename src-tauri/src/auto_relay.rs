@@ -22,6 +22,22 @@ pub async fn handle_relay_needed(
     app: AppHandle,
     task_id: &str,
 ) -> Result<()> {
+    match handle_relay_inner(store, processes, app.clone(), task_id).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let _ = store.update_state(task_id, TaskState::Failed);
+            emit_state(&app, task_id, "Failed", Some(&e.to_string()));
+            Err(e)
+        }
+    }
+}
+
+async fn handle_relay_inner(
+    store: &TaskStore,
+    processes: &DownloadProcessRegistry,
+    app: AppHandle,
+    task_id: &str,
+) -> Result<()> {
     // 延遲 3 秒，防止遇到致命錯誤時無窮快速重試導致程式崩潰
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
