@@ -34,6 +34,8 @@ The default thread count SHALL be 20. The output path SHALL be the full file pat
 - **THEN** the system SHALL report an error indicating that yt-dlp is not installed
 - **AND** the task SHALL transition to the Failed state
 
+*Note: On macOS, GUI applications do not inherit the shell PATH. The system MUST explicitly inject common Homebrew paths (e.g., `/opt/homebrew/bin:/usr/local/bin`) before spawning the subprocess to ensure `yt-dlp` can be located.*
+
 ---
 ### Requirement: Real-time progress parsing
 
@@ -113,11 +115,18 @@ The system SHALL support cancelling a download by sending a SIGTERM signal to th
 ---
 ### Requirement: Download completion detection
 
-The system SHALL detect download completion when yt-dlp exits with exit code 0 and the progress reaches 100%.
+The system SHALL detect download completion when yt-dlp exits with exit code 0. However, the system MUST prioritize the `relay-needed` flag over the exit code, because `yt-dlp` may erroneously exit with code 0 if its Python environment crashes (e.g., `ValueError` on closed files) after exhausting fragment retries during a 403 Forbidden error.
 
 #### Scenario: Download completes successfully
 
 - **WHEN** yt-dlp exits with exit code 0
-- **AND** the last recorded progress was 100%
+- **AND** no HTTP 403 error was detected during the run
 - **THEN** the task SHALL transition to Completed state
 - **AND** the system SHALL emit a completion event
+
+#### Scenario: False completion masked by 403 error
+
+- **WHEN** yt-dlp exits with exit code 0
+- **AND** an HTTP 403 error was detected during the run (needs_relay is true)
+- **THEN** the system SHALL NOT transition to Completed state
+- **AND** the system SHALL emit a relay-needed event instead
