@@ -308,10 +308,8 @@ button:disabled {
 }
 
 .resolution-option small {
-  overflow: hidden;
   color: #98a2ad;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
 }
 
 .modal-actions {
