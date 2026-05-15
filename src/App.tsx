@@ -97,13 +97,13 @@ export function App() {
       setFilename("video.mp4");
 
       const extraction = await invoke<{ options: M3u8Option[] }>("extract_m3u8_options", { pageUrl: task.pageUrl });
-      if (extraction.options.length > 1) {
+      if (extraction.options.length > 0) {
         setResolutionTask(normalized);
         setResolutionOptions(extraction.options);
-        return;
-      }
-      if (extraction.options[0]) {
-        await startDownload(normalized, extraction.options[0]);
+      } else {
+        setError("未能找到影片位址");
+        // 若找不到，可選擇自動或手動取消任務
+        await taskAction(normalized, "cancel_task");
       }
     } catch (err) {
       setError(String(err));
@@ -183,7 +183,16 @@ export function App() {
       {resolutionTask && (
         <ResolutionDialog
           options={resolutionOptions}
-          onCancel={() => setResolutionTask(null)}
+          onCancel={() => {
+            setResolutionTask(null);
+            setResolutionOptions([]);
+          }}
+          onCopy={async (option) => {
+            await navigator.clipboard.writeText(option.url);
+            await taskAction(resolutionTask, "delete_task");
+            setResolutionTask(null);
+            setResolutionOptions([]);
+          }}
           onConfirm={(option) => void startDownload(resolutionTask, option)}
         />
       )}

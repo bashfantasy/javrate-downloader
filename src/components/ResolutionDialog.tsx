@@ -4,10 +4,11 @@ import type { M3u8Option } from "../lib/types";
 interface Props {
   options: M3u8Option[];
   onConfirm: (option: M3u8Option) => void;
+  onCopy: (option: M3u8Option) => void;
   onCancel: () => void;
 }
 
-export function ResolutionDialog({ options, onConfirm, onCancel }: Props) {
+export function ResolutionDialog({ options, onConfirm, onCopy, onCancel }: Props) {
   const [selectedUrl, setSelectedUrl] = useState(options[0]?.url ?? "");
   const selected = options.find((option) => option.url === selectedUrl) ?? options[0];
 
@@ -31,7 +32,8 @@ export function ResolutionDialog({ options, onConfirm, onCancel }: Props) {
         </div>
         <div className="modal-actions">
           <button type="button" onClick={onCancel}>取消</button>
-          <button className="primary-button" type="button" onClick={() => selected && onConfirm(selected)}>確認</button>
+          <button type="button" onClick={() => selected && onCopy(selected)}>複製 URL</button>
+          <button className="primary-button" type="button" onClick={() => selected && onConfirm(selected)}>下載</button>
         </div>
       </section>
     </div>

@@ -148,6 +148,10 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
                                 window.location.href = 'http://m3u8-capture.internal/?url=' + encodeURIComponent(i.src);
                             }
                         });
+                        // 主動嘗試點擊播放按鈕（擴充 motv.app 與通用樣式）
+                        document.querySelectorAll('div[class*="play" i], button[class*="play" i], a[class*="play" i], .vjs-big-play-button, .video-js .vjs-play-control, .plyr__control, .art-state, .dplayer-play-icon, [class*="poster" i], [class*="overlay" i]').forEach(el => {
+                            if (el.offsetParent !== null && typeof el.click === 'function') el.click();
+                        });
                     } catch(e) {}
                 })();
             "#;
@@ -168,7 +172,11 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
 pub fn extract_m3u8_urls_from_html(html: &str) -> Vec<String> {
     let re = Regex::new(r#"https?://[^\s"'<>\\]+?\.m3u8(?:\?[^\s"'<>\\]*)?"#).expect("valid regex");
     re.find_iter(html)
-        .map(|m| m.as_str().trim_end_matches(['.', ',', ';']).to_string())
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(['.', ',', ';'])
+                .replace("&amp;", "&")
+        })
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -247,7 +255,7 @@ pub fn dynamic_capture_script() -> String {
             v.muted = true;
             const _ = v.play();
           });
-          win.document.querySelectorAll('div[class*="play" i], button[class*="play" i], a[class*="play" i], .vjs-big-play-button, .plyr__control, .art-state, .dplayer-play-icon').forEach(el => {
+          win.document.querySelectorAll('div[class*="play" i], button[class*="play" i], a[class*="play" i], .vjs-big-play-button, .video-js .vjs-play-control, .plyr__control, .art-state, .dplayer-play-icon, [class*="poster" i], [class*="overlay" i]').forEach(el => {
             if (el.offsetParent !== null && typeof el.click === 'function') el.click();
           });
 

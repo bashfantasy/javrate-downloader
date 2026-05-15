@@ -213,6 +213,104 @@ impl CdnAdapter for CloudFrontAdapter {
 }
 
 // ─────────────────────────────────────────────
+//  MotvCDN 適配器
+// ─────────────────────────────────────────────
+
+/// MotvCDN 防盜鏈機制適配器
+/// 適用於 motv.multicdn.top 域名，使用 key= 與 time= 參數進行認證
+pub struct MotvCdnAdapter;
+
+impl CdnAdapter for MotvCdnAdapter {
+    fn name(&self) -> &'static str {
+        "MotvCDN"
+    }
+
+    /// 判斷 URL 是否屬於 motv.multicdn.top 域名
+    fn matches(&self, url: &str) -> bool {
+        url.contains("motv.multicdn.top")
+    }
+
+    /// 將新 URL 的 key= 和 time= 參數替換到舊 URL 上，保留影片路徑不變
+    fn patch_url(&self, new_url: &str, old_url: &str) -> Option<String> {
+        // 優先嫁接畫質路徑
+        if let Some(grafted) = graft_resolution_path(new_url, old_url) {
+            return Some(grafted);
+        }
+
+        let re_key = Regex::new(r"key=[^&]+").unwrap();
+        let re_time = Regex::new(r"time=\d+").unwrap();
+
+        let mut patched = old_url.to_string();
+        let mut changed = false;
+
+        if let Some(new_key) = re_key.find(new_url) {
+            patched = re_key.replace(&patched, new_key.as_str()).to_string();
+            changed = true;
+        }
+        if let Some(new_time) = re_time.find(new_url) {
+            patched = re_time.replace(&patched, new_time.as_str()).to_string();
+            changed = true;
+        }
+
+        if changed {
+            Some(patched)
+        } else {
+            None
+        }
+    }
+
+    /// 檢查 time= 參數是否已過期（time 為過期時間的 Unix 時間戳）
+    fn is_expired(&self, url: &str) -> bool {
+        if let Some(idx) = url.find("time=") {
+            let start = idx + 5;
+            let end = url[start..]
+                .find(|c: char| c == '&' || c == '/' || c == ' ')
+                .map(|i| start + i)
+                .unwrap_or(url.len());
+            if let Ok(time_val) = url[start..end].parse::<u64>() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                return time_val < now;
+            }
+        }
+        false
+    }
+
+    /// 從 motv.app 頁面結構嘗試主動拼湊 m3u8 URL
+    fn js_extraction_snippet(&self) -> Option<&'static str> {
+        // NOTE: 嘗試從 Video.js player 實例或頁面 script 標籤中找到 m3u8 URL
+        Some(r#"
+          try {
+            // 嘗試從 Video.js player 實例取得影片源
+            if (typeof videojs !== 'undefined') {
+              const players = videojs.getPlayers();
+              for (const id in players) {
+                const p = players[id];
+                if (p && typeof p.src === 'function') {
+                  const src = p.src();
+                  if (src && src.includes('.m3u8')) report(src);
+                }
+                if (p && p.cache_ && p.cache_.src) {
+                  const src = p.cache_.src;
+                  if (src.includes('.m3u8')) report(src);
+                }
+              }
+            }
+            // 嘗試從 script 標籤中搜尋 multicdn.top 的 m3u8 URL
+            const scripts = document.querySelectorAll('script:not([src])');
+            scripts.forEach(s => {
+              const text = s.textContent || '';
+              const m = text.match(/https?:\/\/[^\s"'<>\\]*motv\.multicdn\.top[^\s"'<>\\]*\.m3u8[^\s"'<>\\]*/gi);
+              if (m) m.forEach(url => report(url));
+            });
+          } catch(_) {}
+        "#)
+    }
+}
+
+// ─────────────────────────────────────────────
 //  通用適配器（Fallback）
 // ─────────────────────────────────────────────
 
@@ -247,6 +345,7 @@ impl CdnAdapter for GenericAdapter {
 static ALL_ADAPTERS: &[&dyn CdnAdapter] = &[
     &BunnyCdnAdapter,
     &CloudFrontAdapter,
+    &MotvCdnAdapter,
     &GenericAdapter,
 ];
 
@@ -330,6 +429,7 @@ mod tests {
     fn selects_correct_adapter() {
         assert_eq!(select_adapter("https://x.b-cdn.net/v.m3u8").name(), "BunnyCDN");
         assert_eq!(select_adapter("https://d1.cloudfront.net/v.m3u8?Policy=a").name(), "CloudFront");
+        assert_eq!(select_adapter("https://motv.multicdn.top/video.m3u8?key=abc&time=123").name(), "MotvCDN");
         assert_eq!(select_adapter("https://example.com/v.m3u8").name(), "Generic");
     }
 
@@ -349,5 +449,39 @@ mod tests {
         let patched = patch_m3u8_url(new, old);
         // 新 URL 已經有畫質路徑，不應該被覆蓋
         assert_eq!(patched, "https://cdn.example.com/abc/1080p/video.m3u8");
+    }
+
+    // ── MotvCDN adapter 測試 ──
+
+    #[test]
+    fn motv_cdn_matches() {
+        assert!(MotvCdnAdapter.matches("https://motv.multicdn.top/JS0271-JS0370/042320_001-1pon.m3u8?key=abc&time=123"));
+        assert!(!MotvCdnAdapter.matches("https://videocdn.avking.xyz/bcdn_token=abc/video.m3u8"));
+        assert!(!MotvCdnAdapter.matches("https://other.multicdn.top/video.m3u8"));
+        assert!(!MotvCdnAdapter.matches("https://example.com/video.m3u8"));
+    }
+
+    #[test]
+    fn motv_cdn_patches_key_and_time() {
+        let old = "https://motv.multicdn.top/JS0271-JS0370/042320_001-1pon.m3u8?key=OLD_KEY_abc123&time=1778870000";
+        let new = "https://motv.multicdn.top/JS0271-JS0370/042320_001-1pon.m3u8?key=NEW_KEY_def456&time=1778880000";
+        let patched = patch_m3u8_url(new, old);
+        assert_eq!(patched, "https://motv.multicdn.top/JS0271-JS0370/042320_001-1pon.m3u8?key=NEW_KEY_def456&time=1778880000");
+    }
+
+    #[test]
+    fn motv_cdn_expired_url_detected() {
+        // time= 已過期（過去的時間戳）
+        assert!(is_url_expired("https://motv.multicdn.top/video.m3u8?key=abc&time=1000000000"));
+        // time= 尚未過期（遙遠的未來）
+        assert!(!is_url_expired("https://motv.multicdn.top/video.m3u8?key=abc&time=9999999999"));
+    }
+
+    #[test]
+    fn motv_cdn_js_snippet_exists() {
+        assert!(MotvCdnAdapter.js_extraction_snippet().is_some());
+        let snippet = MotvCdnAdapter.js_extraction_snippet().unwrap();
+        assert!(snippet.contains("multicdn.top"));
+        assert!(snippet.contains("videojs"));
     }
 }
