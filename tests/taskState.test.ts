@@ -13,6 +13,7 @@ describe("task state matrix", () => {
   it.each([
     ["Pending", "cancel", "Cancelled"],
     ["Downloading", "relay", "Relaying"],
+    ["Merging", "relay", "Relaying"],
     ["Paused", "resume", "Downloading"],
     ["Relaying", "download", "Downloading"],
   ] as const)("handles %s + %s", (state, action, next) => {

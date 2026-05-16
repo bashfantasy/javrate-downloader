@@ -7,7 +7,7 @@ const transitions: Record<TaskState, Partial<Record<Action, TaskState>>> = {
   Extracting: { select: "Selecting", download: "Downloading", cancel: "Cancelled", fail: "Failed" },
   Selecting: { download: "Downloading", cancel: "Cancelled", fail: "Failed" },
   Downloading: { pause: "Paused", cancel: "Cancelled", relay: "Relaying", merge: "Merging", complete: "Completed", fail: "Failed" },
-  Merging: { complete: "Completed", cancel: "Cancelled", fail: "Failed" },
+  Merging: { complete: "Completed", relay: "Relaying", cancel: "Cancelled", fail: "Failed" },
   Relaying: { download: "Downloading", cancel: "Cancelled", fail: "Failed" },
   Paused: { resume: "Downloading", cancel: "Cancelled", fail: "Failed" },
   Completed: {},
