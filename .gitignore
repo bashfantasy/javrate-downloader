@@ -43,6 +43,3 @@ openspec/.vector-search.db*
 # Log files
 *.log
 /tmp/javrate-ytdlp.log
-
-# Temporary test files
-src-tauri/test_regex

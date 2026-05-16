@@ -147,9 +147,6 @@ impl DownloadProcessRegistry {
 pub fn build_yt_dlp_args(config: &DownloadConfig) -> Result<Vec<String>> {
     let output_path = output_path(&config.save_directory, &config.filename)?;
     let origin = origin_from_url(&config.page_url)?;
-    // NOTE: 使用 origin（scheme + host）作為 Referer，而非完整 page_url。
-    // 完整 URL 可能含有中文等非 ASCII 字元，導致 yt-dlp 內部 HTTP 函式庫
-    // 在以 latin-1 編碼 header 時拋出 UnicodeEncodeError。
     Ok(vec![
         "--newline".to_string(),
         "--merge-output-format".to_string(),
@@ -159,7 +156,7 @@ pub fn build_yt_dlp_args(config: &DownloadConfig) -> Result<Vec<String>> {
         "-o".to_string(),
         output_path.to_string_lossy().to_string(),
         "--add-header".to_string(),
-        format!("Referer: {}", origin),
+        format!("Referer: {}", config.page_url),
         "--add-header".to_string(),
         format!("Origin: {}", origin),
         "--add-header".to_string(),
@@ -448,7 +445,7 @@ mod tests {
         assert_eq!(args[3], "-N");
         assert_eq!(args[4], "20");
         assert!(args.contains(&"/tmp/downloads/one.mp4".to_string()));
-        assert!(args.contains(&"Referer: https://example.com".to_string()));
+        assert!(args.contains(&"Referer: https://example.com/watch/one".to_string()));
         assert!(args.contains(&"Origin: https://example.com".to_string()));
         assert!(args.contains(&config.m3u8_url));
     }
