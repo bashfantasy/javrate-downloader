@@ -1,64 +1,57 @@
-# M1 Mac 極端防盜鏈 HLS/m3u8 接力下載器 - 核心技術與需求規格文件
+# Javrate Downloader (接力下載器) - 核心技術與需求規格文件
 
 ## 1. 專案背景與痛點
-目前許多影音網站針對 HLS (m3u8) 串流採用了極端嚴格的防盜鏈機制：
-- **超短命 Token**：播放清單內的 `.ts` 切片綁定的 Token 壽命極短（約 1~2 分鐘）。
+目前許多成人或影音網站（如 Javrate、Motv、Avjoy 等）採用了極端嚴格的防盜鏈機制：
+- **超短命 Token**：播放清單內的 `.ts` 切片或主影片綁定的 Token 壽命極短（約 1~2 分鐘）。
 - **常規工具失效**：傳統單線程下載工具（如 `ffmpeg`）無法在 Token 過期前抓完所有切片，導致下載中斷並報錯 `403 Forbidden`。
+- **複雜的動態載入與廣告**：真實影片網址常被埋藏在混淆的 JS 或是大量的假廣告/彈出式廣告 (Popunder) 之中。
 
-本專案旨在開發一款 macOS (Apple Silicon 最佳化) 的桌面應用程式，透過自動化抓取與 `yt-dlp` 的斷點續傳機制，徹底解決上述痛點。
+本專案旨在開發一款基於 Tauri (Apple Silicon 最佳化) 的桌面應用程式，透過自動化抓取與 `yt-dlp` 的斷點續傳機制，徹底解決上述痛點。
 
 ## 2. 核心破解技術 (接力續傳大法)
-本專案的核心建立在多線程併發與斷點續傳特性上。
 
-### 底層引擎與指令
-使用編譯給 macOS 的 `yt-dlp`，核心指令架構如下：
+### 2.1 底層引擎與指令
+使用內建的 `yt-dlp`，核心指令架構如下：
 ```bash
 yt-dlp -N 20 \
 -o "output.mp4" \
 --add-header "Referer: [PAGE_URL]" \
 --add-header "Origin: [DOMAIN]" \
 --add-header "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15" \
-"[M3U8_URL_WITH_TOKEN]"
+"[MEDIA_URL_WITH_TOKEN]"
 ```
 - **多線程暴力拉取 (`-N 20`)**：最大化利用頻寬，搶在死線前下載最多片段。
-- **斷點接力續傳**：利用 `yt-dlp` 遇到 403 中斷後，暫存檔會保留的特性。替換新的滿血 Token 網址再次執行，即可無縫續傳。
+- **斷點接力續傳**：利用 `yt-dlp` 遇到 403 中斷後，暫存檔會保留的特性。當遇 403 時，程式會自動重新萃取新的 Token 網址再次執行，達成無縫續傳。
+- **標頭偽裝 (Referer/Origin)**：許多網站（如 Avjoy）若未帶入正確的 `Referer`，會直接回傳 5 秒鐘的反盜鏈假影片。
+
+### 2.2 動態 WebView 解析與反廣告機制
+為了對抗動態生成的 URL 與惡意廣告，系統採用隱藏的 **Tauri WebView** 載入目標網頁，並注入腳本擷取真實資源：
+1. **防彈出廣告 (Popunder Protection)**：
+   - 腳本**絕不主動點擊**畫面上的播放按鈕 UI，因為這會觸發暗藏的廣告分頁，導致下載器錯誤捕捉到色情直播（如 Stripchat）的 `.m3u8` 串流。
+   - 改為在背景透過 JS 調用 `video.play()` 來促使真實網址載入。
+2. **CDN 廣告黑名單過濾**：
+   - 建立嚴格的 `AD_CDNS` 黑名單（如 `growcdnssedge.com`, `saawsedge.com` 等），在前端腳本與 Rust 後端雙重過濾，確保最終獲取的絕對是主影片網址。
+3. **混合資源支援**：
+   - 同時支援萃取標準 `.m3u8` 播放清單與直接的 `.mp4` 資源（例如 Avjoy 的 `media-cdn*.avjoy.me` 格式）。
 
 ## 3. 系統功能與 UI 需求 (System Requirements)
 
 ### 3.1 任務輸入與解析模組
-- **單一網址輸入**：使用者只需輸入影片的原始網頁網址 (例如：`https://www.javrate.com/Movie/Detail/da045d78-...`)。
-- **自動萃取 m3u8**：App 在背景爬取該網頁的 Source HTML，找出所有 `.m3u8` 網址。
-- **多重解析選擇**：若解析出多個 m3u8 網址（例如不同解析度 720p, 1080p），需跳出選單供使用者選擇要下載哪一個。
+- **單一網址輸入**：使用者只需輸入影片的原始網頁網址。
+- **多重解析選擇**：若解析出多個資源網址（例如不同解析度 720p, 1080p），跳出視窗供使用者選擇要下載哪一個。
 
 ### 3.2 下載任務清單與控制介面 (UI)
 - **多任務清單**：支援隨時加入新任務，介面需條列顯示所有下載任務。
-- **即時進度顯示**：解析 `yt-dlp` 的 stdout 日誌，在介面上即時更新進度條（百分比、下載速度、預估時間與 frag X/Y）。
-- **任務操作控制**：每一筆任務皆需具備 **暫停 (Pause)**、**恢復 (Resume)**、**取消 (Cancel)** 三大功能。
+- **即時進度顯示**：解析 `yt-dlp` 的 stdout 日誌，即時更新進度條（百分比、下載速度、預估時間）。
+- **任務操作控制**：每一筆任務皆需具備 **暫停 (Pause)**、**恢復 (Resume)**、**取消 (Cancel)** 功能。
 
 ### 3.3 全自動無縫接力模組 (Auto-Relay Engine)
-這是本 App 擺脫人工操作的核心亮點，完全自動化處理 403 斷線問題：
 1. **中斷偵測**：監聽 `yt-dlp` 輸出，一旦偵測到 `HTTP Error 403: Forbidden`，立即中止該次進程。
-2. **自動重新獲取 Token**：
-   - App 自動在背景**重新請求**最初輸入的「影片網頁網址」。
-   - 再次萃取出帶有最新 Token 的 `.m3u8` 網址。
-   - 確保新萃取的 m3u8 畫質規格與原任務相符。
-3. **無縫重啟**：將全新的 m3u8 網址帶入 `yt-dlp` 指令，針對原暫存檔執行續傳，直到 100% 完檔，全程使用者無感。
+2. **自動重新獲取 Token**：透過背景 WebView 再次載入原網頁，取得帶有新 Token 的相同規格網址。
+3. **無縫重啟**：將全新網址帶入 `yt-dlp` 針對原暫存檔續傳，直到 100% 完檔，全程使用者無感。
 
-## 4. 技術架構選型建議
-基於以上需求，建議的技術堆疊如下：
-
-### 前端介面層 (Frontend UI)
-- **Tauri (React + TypeScript)**：
-  - 體積極小，跨平台能力強，且與原生 macOS 整合度極高（內部使用 WKOnyx/WebKit）。
-  - 使用 React 刻畫任務清單、進度條與操作按鈕非常快速。
-- 或 **Electron**：如果對 Node.js 生態最熟悉，這會是最快產出的方案。
-
-### 核心邏輯層 (Backend Logic)
-- 負責管理下載任務隊列 (Task Queue) 的狀態。
-- 建立子進程 (`Child Process`) 呼叫 `yt-dlp` 並透過 `stdout` 監聽。
-- **暫停邏輯**：發送 SIGINT (`Ctrl+C`) 信號給該 `yt-dlp` 進程。
-- **恢復邏輯**：帶著原參數重啟進程。
-- **背景爬蟲模組**：負責發送 HTTP GET 請求解析 HTML。
-
-## 5. 開發實作難點預警 (Pitfalls)
-- **動態渲染的 m3u8**：如果該網站的 m3u8 網址是由 JavaScript 動態產生（也就是直接對 URL 發送 GET 請求拿到的 Source HTML 裡面沒有 `.m3u8` 字串），爬蟲模組就不能只用簡單的 HTTP GET。此時必須利用 Headless 瀏覽器（如 Playwright 或 Tauri 內建的 WebView）來攔截網路請求 (Network Interception) 才能精準拿到包含 Token 的 m3u8。
+## 4. 技術架構選型
+- **前端介面層 (Frontend UI)**：React + TypeScript + Vite
+- **核心框架 (Backend Framework)**：Tauri (Rust)
+- **下載引擎**：`yt-dlp` (作為外部執行檔綁定)
+- **資源擷取器**：Rust `reqwest` (靜態解析) + Tauri `WebViewWindow` (動態解析與 JS 注入)
