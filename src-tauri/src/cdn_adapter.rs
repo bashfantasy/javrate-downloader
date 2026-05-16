@@ -311,6 +311,74 @@ impl CdnAdapter for MotvCdnAdapter {
 }
 
 // ─────────────────────────────────────────────
+//  Avjoy CDN 適配器
+// ─────────────────────────────────────────────
+
+/// Avjoy.me 影片 CDN 適配器
+/// 適用於 media-cdn*.avjoy.me 網域，影片以直接 MP4 提供。
+/// URL 格式：https://media-cdn3.avjoy.me/video/<token>/<unix_ts>/<id>_<res>.mp4
+pub struct AvjoyCdnAdapter;
+
+impl CdnAdapter for AvjoyCdnAdapter {
+    fn name(&self) -> &'static str {
+        "AvjoyCDN"
+    }
+
+    fn matches(&self, url: &str) -> bool {
+        // 匹配 media-cdn*.avjoy.me 或 media-cdn*.avjoy.* 網域
+        url.contains(".avjoy.me") || url.contains(".avjoy.")
+    }
+
+    fn patch_url(&self, new_url: &str, _old_url: &str) -> Option<String> {
+        // Avjoy MP4 重新擷取後即為最新有效 URL，直接使用新 URL
+        Some(new_url.to_string())
+    }
+
+    fn is_expired(&self, url: &str) -> bool {
+        // NOTE: URL 路徑格式為 /<token>/<unix_ts>/<filename>.mp4
+        // 嘗試從路徑片段中找出純數字的 Unix timestamp 段落進行過期判斷
+        if let Ok(parsed) = url::Url::parse(url) {
+            for segment in parsed.path_segments().into_iter().flatten() {
+                if let Ok(ts) = segment.parse::<u64>() {
+                    // 只處理合理的 Unix timestamp 範圍（2020年 ~ 2100年）
+                    if ts > 1_577_836_800 && ts < 4_102_444_800 {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        return ts < now;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn js_extraction_snippet(&self) -> Option<&'static str> {
+        // NOTE: avjoy 主播放器固定使用 id="video_html5_api" (.vjs-tech)，
+        // 頁面上還有廣告 video 元素，必須指定主播放器以避免抓到錯誤的影片
+        Some(r#"
+          try {
+            const AD_CDN_PATTERNS = ['growcdnssedge.com', 'nexusriftcore4.cyou', 'saawsedge.com', 'bkcdn.net'];
+            const isAdUrl = (url) => AD_CDN_PATTERNS.some(p => url.includes(p));
+            document.querySelectorAll('video').forEach(v => {
+              const src = v.currentSrc || v.src || '';
+              if (src && src.includes('.mp4') && !isAdUrl(src)) {
+                report(src);
+              }
+              // 同時掃描 <source> 子標籤
+              v.querySelectorAll('source').forEach(s => {
+                if (s.src && s.src.includes('.mp4') && !isAdUrl(s.src)) {
+                  report(s.src);
+                }
+              });
+            });
+          } catch(_) {}
+        "#)
+    }
+}
+
+// ─────────────────────────────────────────────
 //  通用適配器（Fallback）
 // ─────────────────────────────────────────────
 
@@ -346,6 +414,7 @@ static ALL_ADAPTERS: &[&dyn CdnAdapter] = &[
     &BunnyCdnAdapter,
     &CloudFrontAdapter,
     &MotvCdnAdapter,
+    &AvjoyCdnAdapter,
     &GenericAdapter,
 ];
 
@@ -430,7 +499,42 @@ mod tests {
         assert_eq!(select_adapter("https://x.b-cdn.net/v.m3u8").name(), "BunnyCDN");
         assert_eq!(select_adapter("https://d1.cloudfront.net/v.m3u8?Policy=a").name(), "CloudFront");
         assert_eq!(select_adapter("https://motv.multicdn.top/video.m3u8?key=abc&time=123").name(), "MotvCDN");
+        assert_eq!(select_adapter("https://media-cdn3.avjoy.me/video/TOKEN/1778925984/75842_1080p.mp4").name(), "AvjoyCDN");
         assert_eq!(select_adapter("https://example.com/v.m3u8").name(), "Generic");
+    }
+
+    // ── AvjoyCDN adapter 測試 ──
+
+    #[test]
+    fn avjoy_cdn_matches() {
+        assert!(AvjoyCdnAdapter.matches("https://media-cdn3.avjoy.me/video/TOKEN/1778925984/75842_1080p.mp4"));
+        assert!(AvjoyCdnAdapter.matches("https://media-cdn1.avjoy.me/video/TOKEN/1778925984/12345_720p.mp4"));
+        assert!(!AvjoyCdnAdapter.matches("https://videocdn.avking.xyz/bcdn_token=abc/video.m3u8"));
+        assert!(!AvjoyCdnAdapter.matches("https://example.com/video.mp4"));
+    }
+
+    #[test]
+    fn avjoy_cdn_expired_url_detected() {
+        // timestamp 已過期（2020年9月，在有效範圍內但已過期）
+        assert!(is_url_expired("https://media-cdn3.avjoy.me/video/TOKEN/1600000000/75842_1080p.mp4"));
+        // timestamp 尚未過期（遙遠的未來）
+        assert!(!is_url_expired("https://media-cdn3.avjoy.me/video/TOKEN/4102444799/75842_1080p.mp4"));
+    }
+
+    #[test]
+    fn avjoy_cdn_patch_returns_new_url() {
+        let old = "https://media-cdn3.avjoy.me/video/OLD_TOKEN/1778925984/75842_1080p.mp4";
+        let new = "https://media-cdn3.avjoy.me/video/NEW_TOKEN/1778999999/75842_1080p.mp4";
+        let patched = patch_m3u8_url(new, old);
+        assert_eq!(patched, new);
+    }
+
+    #[test]
+    fn avjoy_cdn_js_snippet_exists() {
+        assert!(AvjoyCdnAdapter.js_extraction_snippet().is_some());
+        let snippet = AvjoyCdnAdapter.js_extraction_snippet().unwrap();
+        assert!(snippet.contains("currentSrc"));
+        assert!(snippet.contains("growcdnssedge.com"));
     }
 
     #[test]

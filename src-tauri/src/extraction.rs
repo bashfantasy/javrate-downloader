@@ -101,7 +101,11 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
             move |request, _response| {
                 let uri = request.uri().to_string();
                 if uri.contains(".m3u8") || uri.contains(DYNAMIC_CAPTURE_HOST) {
-                    println!("🕸️ [WebResourceRequest] 攔截到: {}", uri);
+                    println!("🕸️ [WebResourceRequest] 攔截到 M3U8: {}", uri);
+                }
+                // NOTE: 同時明確攔截 avjoy MP4 資源請求
+                if uri.contains(".avjoy.") && uri.contains(".mp4") {
+                    println!("🎬 [WebResourceRequest] 攔截到 Avjoy MP4: {}", uri);
                 }
                 record_m3u8_candidate(&uri, &found_urls, &tx);
             }
@@ -127,7 +131,7 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
         .build()
         .context("failed to create hidden WebView for dynamic extraction")?;
 
-    // 新增：主動輪詢 DOM 與 iframes
+    // 主動輪詢 DOM、iframes 與 video 標籤（同時支援 m3u8 與 avjoy MP4）
     let window_clone = window.clone();
     tokio::spawn(async move {
         for _ in 0..15 { // 30 秒內最多輪詢 15 次
@@ -135,23 +139,32 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
             let script = r#"
                 (function() {
                     try {
+                        const AD_CDNS = ['growcdnssedge.com', 'nexusriftcore4.cyou', 'saawsedge.com', 'bkcdn.net'];
+                        const isAd = (u) => AD_CDNS.some(p => u.includes(p));
+                        const report = (url) => {
+                            if (url) window.location.href = 'http://m3u8-capture.internal/?url=' + encodeURIComponent(url);
+                        };
+                        // 掃描 HTML 中的 m3u8
                         let text = document.documentElement.outerHTML;
-                        let matches = text.match(/https?:\/\/[^\s"'<>\\]+?\.m3u8(?:[^\s"'<>\\]*)?/gi);
-                        if (matches && matches.length > 0) {
-                            for (let url of matches) {
-                                window.location.href = 'http://m3u8-capture.internal/?url=' + encodeURIComponent(url);
-                            }
-                        }
-                        // 檢查 iframe src
-                        document.querySelectorAll('iframe').forEach(i => {
-                            if (i.src && i.src.includes('.m3u8')) {
-                                window.location.href = 'http://m3u8-capture.internal/?url=' + encodeURIComponent(i.src);
-                            }
+                        let m3u8s = text.match(/https?:\/\/[^\s"'<>\\]+?\.m3u8(?:[^\s"'<>\\]*)?/gi);
+                        if (m3u8s) m3u8s.forEach(u => {
+                            if (!isAd(u)) report(u);
                         });
-                        // 主動嘗試點擊播放按鈕（擴充 motv.app 與通用樣式）
-                        document.querySelectorAll('div[class*="play" i], button[class*="play" i], a[class*="play" i], .vjs-big-play-button, .video-js .vjs-play-control, .plyr__control, .art-state, .dplayer-play-icon, [class*="poster" i], [class*="overlay" i]').forEach(el => {
+                        // 掃描 video 標籤的 currentSrc（主要是 avjoy MP4）
+                        document.querySelectorAll('video').forEach(v => {
+                            const src = v.currentSrc || v.src || '';
+                            if (src && src.includes('.mp4') && !isAd(src)) report(src);
+                            v.querySelectorAll('source').forEach(s => {
+                                if (s.src && s.src.includes('.mp4') && !isAd(s.src)) report(s.src);
+                            });
+                        });
+                        // NOTE: 優先點擊 Skip Ad 按鈕（avjoy 使用 .vast-skip-button.enabled）
+                        // 讓廣告儘快結束，縮短主影片 currentSrc 載入等待時間
+                        document.querySelectorAll('.vast-skip-button.enabled, [class*="skip-ad" i], [id*="skip-ad" i], button.skip, .skipButton').forEach(el => {
                             if (el.offsetParent !== null && typeof el.click === 'function') el.click();
                         });
+                        // NOTE: 絕對不可主動點擊播放按鈕 (div[class*="play"] 等 UI 元素)
+                        // 因為成人網站會在畫面上覆蓋 Popunder 廣告（例如 Stripchat），點擊會開啟新分頁並載入額外的 M3U8 串流，導致下載到錯誤的影片。
                     } catch(e) {}
                 })();
             "#;
@@ -170,6 +183,7 @@ pub async fn extract_dynamic_webview(app: &AppHandle, page_url: &str) -> Result<
 }
 
 pub fn extract_m3u8_urls_from_html(html: &str) -> Vec<String> {
+    const AD_CDNS: &[&str] = &["growcdnssedge.com", "nexusriftcore4.cyou", "saawsedge.com", "bkcdn.net"];
     let re = Regex::new(r#"https?://[^\s"'<>\\]+?\.m3u8(?:\?[^\s"'<>\\]*)?"#).expect("valid regex");
     re.find_iter(html)
         .map(|m| {
@@ -177,6 +191,7 @@ pub fn extract_m3u8_urls_from_html(html: &str) -> Vec<String> {
                 .trim_end_matches(['.', ',', ';'])
                 .replace("&amp;", "&")
         })
+        .filter(|url| !AD_CDNS.iter().any(|cdn| url.contains(cdn)))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -190,11 +205,21 @@ pub fn dynamic_capture_script() -> String {
   window.__JAVRATE_M3U8_CAPTURE_INSTALLED__ = true;
   const seen = new Set();
   const pattern = /\.m3u8(?:[?#][^\s"'<>\\]*)?/i;
+  const AD_CDN_PATTERNS = ['growcdnssedge.com', 'nexusriftcore4.cyou', 'saawsedge.com', 'bkcdn.net'];
+  const isAdUrl = (url) => AD_CDN_PATTERNS.some(p => url.includes(p));
+
   const report = (value) => {
     try {
       if (!value) return;
-      const absoluteUrl = new URL(String(value), document.baseURI).href;
-      if (!pattern.test(absoluteUrl) || seen.has(absoluteUrl)) return;
+      const strValue = String(value);
+      // NOTE: 同時支援 .m3u8 與來自 Avjoy 的直接 .mp4 影片網址
+      const isM3u8 = /\.m3u8(?:[?#][^\s"'<>\\]*)?/i.test(strValue);
+      const isMp4 = /\.mp4(?:[?#][^\s"'<>\\]*)?/i.test(strValue);
+      if (!isM3u8 && !isMp4) return;
+      if (isAdUrl(strValue)) return; // 過濾廣告
+
+      const absoluteUrl = new URL(strValue, document.baseURI).href;
+      if (seen.has(absoluteUrl)) return;
       seen.add(absoluteUrl);
       window.location.href = "http://m3u8-capture.internal/?url=" + encodeURIComponent(absoluteUrl);
     } catch (_) {}
@@ -251,13 +276,21 @@ pub fn dynamic_capture_script() -> String {
             });
           }
 
+          win.document.querySelectorAll("video").forEach(v => {
+            const src = v.currentSrc || v.src || '';
+            if (src && src.includes('.mp4')) report(src);
+          });
+
           win.document.querySelectorAll("video").forEach((v) => {
             v.muted = true;
             const _ = v.play();
           });
-          win.document.querySelectorAll('div[class*="play" i], button[class*="play" i], a[class*="play" i], .vjs-big-play-button, .video-js .vjs-play-control, .plyr__control, .art-state, .dplayer-play-icon, [class*="poster" i], [class*="overlay" i]').forEach(el => {
+          // NOTE: 優先點擊 Skip Ad 按鈕，讓廣告提早結束，加速主影片 currentSrc 載入
+          win.document.querySelectorAll('.vast-skip-button.enabled, [class*="skip-ad" i], [id*="skip-ad" i], button.skip, .skipButton').forEach(el => {
             if (el.offsetParent !== null && typeof el.click === 'function') el.click();
           });
+          // NOTE: 不點擊任何網頁上的播放按鈕 UI，因為成人網站會在上面覆蓋透明的彈出式廣告 (Popunder)
+          // 這些點擊會導致開啟新的分頁（如 Stripchat 等直播網站），進而讓我們抓到錯誤的 M3U8 串流。
 
           Array.from(win.document.querySelectorAll("iframe")).forEach(f => {
             if (f.contentWindow) scanWindow(f.contentWindow);
@@ -292,7 +325,11 @@ fn record_m3u8_candidate(
     found_urls: &Arc<Mutex<BTreeSet<String>>>,
     tx: &mpsc::UnboundedSender<()>,
 ) {
-    let urls = extract_m3u8_urls_from_html(candidate);
+    // NOTE: 收集 .m3u8 網址
+    let mut urls = extract_m3u8_urls_from_html(candidate);
+    // NOTE: 同時收集 Avjoy 的直接 MP4 網址（僅限非廣告 CDN）
+    urls.extend(extract_avjoy_mp4_urls(candidate));
+
     if urls.is_empty() {
         return;
     }
@@ -307,6 +344,23 @@ fn record_m3u8_candidate(
     if inserted {
         let _ = tx.send(());
     }
+}
+
+/// 從文字中擷取屬於 Avjoy 主影片 CDN 的 MP4 網址，並過濾廣告 CDN。
+/// Avjoy 主影片域名格式：media-cdn*.avjoy.me
+fn extract_avjoy_mp4_urls(text: &str) -> Vec<String> {
+    const AD_CDNS: &[&str] = &["growcdnssedge.com", "nexusriftcore4.cyou", "saawsedge.com", "bkcdn.net"];
+    let re = Regex::new(r#"https?://[^\s"'<>\\]+?\.mp4(?:\?[^\s"'<>\\]*)?"|https?://[^\s"'<>\\]+?\.mp4"#)
+        .expect("valid regex");
+    re.find_iter(text)
+        .map(|m| m.as_str().trim_matches('"').trim_end_matches(['.', ',', ';']).to_string())
+        .filter(|url| {
+            // 必須屬於 avjoy CDN，且不是已知廣告節點
+            url.contains(".avjoy.") && !AD_CDNS.iter().any(|cdn| url.contains(cdn))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn wait_for_dynamic_captures(rx: &mut mpsc::UnboundedReceiver<()>) {
@@ -353,6 +407,16 @@ fn options_from_urls(urls: impl Iterator<Item = String>) -> Vec<M3u8Option> {
 }
 
 pub fn parse_resolution_label(url: &str) -> String {
+    // NOTE: 優先比對 _1080p.mp4 / _720p.mp4 這類 Avjoy 後綴格式
+    let re_suffix = Regex::new(r"(?i)_((?:2160|1440|1080|720|540|480|360|240)p)\.mp4(?:[?#]|$)")
+        .expect("valid regex");
+    if let Some(caps) = re_suffix.captures(url) {
+        if let Some(m) = caps.get(1) {
+            return m.as_str().to_ascii_lowercase();
+        }
+    }
+
+    // 一般 m3u8 路徑中的解析度片段（如 /720p/ 或 720p 字串）
     let re = Regex::new(r"(?i)(?:^|[^\d])((?:2160|1440|1080|720|540|480|360|240)p)(?:[^\d]|$)")
         .expect("valid regex");
     re.captures(url)
@@ -430,6 +494,7 @@ mod tests {
 
     #[test]
     fn parses_resolution_labels_from_paths() {
+        // M3U8 路徑格式
         assert_eq!(
             parse_resolution_label("https://cdn.example.com/video/720p/index.m3u8?token=abc"),
             "720p"
@@ -441,6 +506,15 @@ mod tests {
         assert_eq!(
             parse_resolution_label("https://cdn.example.com/video/stream.m3u8?token=ghi"),
             "stream.m3u8"
+        );
+        // Avjoy MP4 後綴格式 (_1080p.mp4)
+        assert_eq!(
+            parse_resolution_label("https://media-cdn3.avjoy.me/video/TOKEN/1778925984/75842_1080p.mp4"),
+            "1080p"
+        );
+        assert_eq!(
+            parse_resolution_label("https://media-cdn3.avjoy.me/video/TOKEN/1778925984/75842_720p.mp4"),
+            "720p"
         );
     }
 
