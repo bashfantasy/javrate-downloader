@@ -18,12 +18,7 @@ export function TaskList({ tasks, onAction }: Props) {
               <div className="task-title">
                 <strong>{task.filename}</strong>
                 <span>{task.pageUrl}</span>
-                {task.m3u8Url && (
-                  <span style={{ color: "#8b949e", fontSize: "0.85em", marginTop: "2px" }}>
-                    {task.m3u8Url.toLowerCase().includes('.mp4') ? 'MP4: ' : 'M3U8: '}
-                    {task.m3u8Url}
-                  </span>
-                )}
+                {task.m3u8Url && <span style={{ color: "#8b949e", fontSize: "0.85em", marginTop: "2px" }}>M3U8: {task.m3u8Url}</span>}
                 <small>{task.saveDirectory}</small>
               </div>
               <span className={`badge badge-${task.state.toLowerCase()}`}>{statusLabels[task.state]}</span>

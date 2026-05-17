@@ -97,7 +97,6 @@ The UI SHALL display all download tasks in a scrollable list. Each task item SHA
 - Current task state (with color-coded status badge)
 - Progress bar with percentage
 - Download speed and ETA
-- Media URL with type prefix: The UI SHALL display the media URL prefixed with `MP4: ` if it is a direct MP4 file, or `M3U8: ` if it is a playlist URL.
 - Fragment progress (frag X/Y)
 - Relay attempt count (when applicable)
 

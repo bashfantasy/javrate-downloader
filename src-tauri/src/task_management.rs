@@ -250,6 +250,7 @@ pub fn is_valid_transition(current: &TaskState, next: &TaskState) -> bool {
             | (TaskState::Downloading, TaskState::Cancelled)
             | (TaskState::Downloading, TaskState::Failed)
             | (TaskState::Merging, TaskState::Completed)
+            | (TaskState::Merging, TaskState::Relaying)
             | (TaskState::Merging, TaskState::Cancelled)
             | (TaskState::Merging, TaskState::Failed)
             | (TaskState::Relaying, TaskState::Downloading)
@@ -329,6 +330,10 @@ mod tests {
         assert!(is_valid_transition(
             &TaskState::Downloading,
             &TaskState::Paused
+        ));
+        assert!(is_valid_transition(
+            &TaskState::Merging,
+            &TaskState::Relaying
         ));
         assert!(!is_valid_transition(
             &TaskState::Completed,

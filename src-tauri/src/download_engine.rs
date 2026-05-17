@@ -147,19 +147,21 @@ impl DownloadProcessRegistry {
 pub fn build_yt_dlp_args(config: &DownloadConfig) -> Result<Vec<String>> {
     let output_path = output_path(&config.save_directory, &config.filename)?;
     let origin = origin_from_url(&config.page_url)?;
-    // NOTE: 使用 origin（scheme + host）作為 Referer，而非完整 page_url。
-    // 完整 URL 可能含有中文等非 ASCII 字元，導致 yt-dlp 內部 HTTP 函式庫
-    // 在以 latin-1 編碼 header 時拋出 UnicodeEncodeError。
     Ok(vec![
         "--newline".to_string(),
         "--merge-output-format".to_string(),
         "mp4".to_string(),
         "-N".to_string(),
         config.thread_count.max(1).to_string(),
+        "--fragment-retries".to_string(),
+        "1".to_string(),
+        "--retry-sleep".to_string(),
+        "fragment:0".to_string(),
+        "--abort-on-unavailable-fragments".to_string(),
         "-o".to_string(),
         output_path.to_string_lossy().to_string(),
         "--add-header".to_string(),
-        format!("Referer: {}", origin),
+        format!("Referer: {}", config.page_url),
         "--add-header".to_string(),
         format!("Origin: {}", origin),
         "--add-header".to_string(),
@@ -302,7 +304,9 @@ fn monitor_output<R>(
                 // NOTE: 只設旗標，不立即觸發接力。
                 // 等 yt-dlp 自然退出後由 monitor_exit 觸發，避免兩個進程同時存取 .part 檔案。
                 needs_relay.store(true, std::sync::atomic::Ordering::SeqCst);
-            } else if is_merging_line(&line) {
+            } else if is_merging_line(&line)
+                && !needs_relay.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 let _ = app.emit(
                     "state-changed",
                     StateChangedPayload {
@@ -354,6 +358,16 @@ fn monitor_exit(
                         relay_phase: None,
                     },
                 );
+            } else if !requires_relay {
+                let _ = app.emit(
+                    "state-changed",
+                    StateChangedPayload {
+                        task_id: task_id.clone(),
+                        state: "Failed".to_string(),
+                        error_message: Some(exit_failure_message(status.code())),
+                        relay_phase: None,
+                    },
+                );
             }
 
             let _ = app.emit(
@@ -382,6 +396,13 @@ fn monitor_exit(
 
 pub fn is_download_complete(status_success: bool, _progress: &DownloadProgress) -> bool {
     status_success
+}
+
+fn exit_failure_message(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("yt-dlp exited with code {code}"),
+        None => "yt-dlp exited without a status code".to_string(),
+    }
 }
 
 fn output_path(save_directory: &Path, filename: &str) -> Result<PathBuf> {
@@ -447,10 +468,24 @@ mod tests {
         assert_eq!(args[2], "mp4");
         assert_eq!(args[3], "-N");
         assert_eq!(args[4], "20");
+        assert!(args.contains(&"--fragment-retries".to_string()));
+        assert!(args.contains(&"1".to_string()));
+        assert!(args.contains(&"--retry-sleep".to_string()));
+        assert!(args.contains(&"fragment:0".to_string()));
+        assert!(args.contains(&"--abort-on-unavailable-fragments".to_string()));
         assert!(args.contains(&"/tmp/downloads/one.mp4".to_string()));
-        assert!(args.contains(&"Referer: https://example.com".to_string()));
+        assert!(args.contains(&"Referer: https://example.com/watch/one".to_string()));
         assert!(args.contains(&"Origin: https://example.com".to_string()));
         assert!(args.contains(&config.m3u8_url));
+    }
+
+    #[test]
+    fn formats_exit_failure_message() {
+        assert_eq!(exit_failure_message(Some(1)), "yt-dlp exited with code 1");
+        assert_eq!(
+            exit_failure_message(None),
+            "yt-dlp exited without a status code"
+        );
     }
 
     #[test]

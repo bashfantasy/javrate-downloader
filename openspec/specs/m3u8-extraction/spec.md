@@ -39,13 +39,13 @@ When static HTML extraction yields zero m3u8 URLs, the system SHALL fall back to
 
 The system SHALL set a maximum page load timeout of 30 seconds for the dynamic extraction mode.
 
-The system SHALL inject JavaScript into the WebView that automatically triggers video playback to force media network requests (m3u8 or mp4). To avoid triggering malicious "Popunder" ads (which open new tabs and may contain irrelevant video streams like Stripchat), the injected script SHALL:
-- Call `video.play()` directly on all `<video>` elements found in the DOM.
-- NOT simulate user clicks on UI overlay elements (like play icons or poster divs) that typically trigger popunders.
-- Attempt to click legitimate "Skip Ad" buttons using an extensible set of CSS selectors to speed up main content loading:
-  - Avjoy: `.vast-skip-button.enabled`
-  - Generic: `[class*="skip-ad" i]`, `[id*="skip-ad" i]`, `button.skip`, `.skipButton`
-- Periodically scan the DOM (every 2 seconds) for new video sources.
+The system SHALL inject JavaScript into the WebView that automatically triggers video playback to force m3u8 network requests. The injected script SHALL attempt to click play buttons using an extensible set of CSS selectors that covers common video player UI patterns, including but not limited to:
+- Video.js: `.vjs-big-play-button`, `.video-js .vjs-play-control`
+- Generic play buttons: elements with class names containing "play" (case-insensitive)
+- DPlayer: `.dplayer-play-icon`
+- ArtPlayer: `.art-state`
+- Plyr: `.plyr__control`
+- Custom poster overlays and play icons that overlay video elements
 
 The system SHALL also support CDN-specific JavaScript extraction snippets registered via the CDN adapter system. Each CDN adapter MAY provide a `js_extraction_snippet` that runs in the WebView context to synthesize m3u8 URLs from page-embedded data (e.g., constructing URLs from tokens, keys, or encoded configuration found in script tags or global variables).
 
@@ -56,12 +56,11 @@ The system SHALL also support CDN-specific JavaScript extraction snippets regist
 - **THEN** the system SHALL launch a headless WebView to load the page
 - **AND** the system SHALL intercept network requests and capture all `.m3u8` URLs
 
-#### Scenario: Media URL loaded after automated playback
+#### Scenario: m3u8 URL loaded after play button click
 
-- WHEN the target page requires video playback before loading the resource
-- THEN the injected JavaScript SHALL automatically call `.play()` on video elements
-- AND the system SHALL NOT trigger popunder ads by avoiding UI-level clicks on player overlays
-- AND the system SHALL capture the resulting media network request (m3u8 or mp4)
+- **WHEN** the target page requires user interaction (clicking a play button) before loading the m3u8 URL
+- **THEN** the injected JavaScript SHALL automatically click play button elements matching the registered CSS selectors
+- **AND** the system SHALL capture the resulting `.m3u8` network request
 
 ##### Example: motv.app play button triggering
 
@@ -177,63 +176,4 @@ code:
   - src-tauri/src/extraction.rs
   - src/App.tsx
   - src-tauri/src/cdn_adapter.rs
--->
-
----
-The system SHALL support extracting video sources from `avjoy.me`. Since avjoy.me uses HLS for advertisements and direct MP4 for main content, the extraction logic SHALL:
-- Prioritize `.mp4` URLs found in `video` tags or `source` tags if they belong to the `avjoy.me` or `media-cdn*.avjoy.me` domains.
-- Automatically filter out known advertisement CDNs (e.g., `growcdnssedge.com`, `nexusriftcore4.cyou`, `saawsedge.com`, `bkcdn.net`) when scanning both HTML body and intercepted network requests.
-- Ensure that M3U8 URLs belonging to advertisement CDNs are NOT reported as valid candidates.
-- Capture the `currentSrc` of the primary video element in the headless WebView after any pre-roll advertisements have been skipped or finished loading.
-
-#### Scenario: Avjoy main video is MP4
-
-- **WHEN** user provides an `avjoy.me` video page URL
-- **AND** the primary video player loads an MP4 file from `media-cdn3.avjoy.me`
-- **THEN** the system SHALL extract this MP4 URL as a download candidate
-- **AND** label it with the appropriate resolution (e.g., 1080p)
-
-##### Example: Avjoy source identification
-
-| Detected URL | Domain Type | Action |
-|---|---|---|
-| `https://media-hls.growcdnssedge.com/.../240p.m3u8` | Ad CDN | Ignore or label as Ad |
-| `https://media-cdn3.avjoy.me/.../75842_1080p.mp4` | Main Content | **Extract as primary candidate** |
-
-#### Scenario: Resolution parsing from Avjoy MP4
-
-- **WHEN** an extracted MP4 URL from Avjoy contains a resolution suffix like `_1080p.mp4` or `_720p.mp4`
-- **THEN** the system SHALL correctly parse the resolution (1080p, 720p) and display it in the selection dialog.
-
-
-<!-- @trace
-source: add-avjoy-support
-updated: 2026-05-16
-code:
-  - src-tauri/src/cdn_adapter.rs
-  - src-tauri/src/download_engine.rs
-  - src-tauri/src/extraction.rs
--->
-
----
-### Requirement: Avjoy.me CDN adapter
-
-The system SHALL include a CDN adapter for `avjoy.me` content domains (e.g., `media-cdn*.avjoy.me`). The adapter SHALL:
-- Match URLs belonging to Avjoy's content delivery network.
-- Detect expiration based on the Unix timestamp segment in the URL (e.g., `/1778925984/` in the path).
-- Support token refresh by re-extracting the URL from the original page.
-
-#### Scenario: Avjoy URL expiration detection
-
-- **WHEN** an Avjoy MP4 URL contains a Unix timestamp in its path
-- **AND** that timestamp is in the past
-- **THEN** the adapter SHALL report the URL as expired, triggering a relay if needed.
-
-<!-- @trace
-source: add-avjoy-support
-updated: 2026-05-16
-code:
-  - src-tauri/src/cdn_adapter.rs
-  - src-tauri/src/download_engine.rs
-  - src-tauri/src/extraction.rs
 -->
